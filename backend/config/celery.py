@@ -7,6 +7,7 @@ os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
 
 app = Celery("tickertape")
 app.config_from_object("django.conf:settings", namespace="CELERY")
+app.conf.timezone = "America/New_York"
 app.autodiscover_tasks()
 
 # Periodic task schedule

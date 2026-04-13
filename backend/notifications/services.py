@@ -13,31 +13,38 @@ logger = logging.getLogger(__name__)
 
 
 def send_stock_email_for_subscription(subscription):
-    """Send a single stock price email for one subscription (Send Now)."""
-    prices = get_stock_prices([subscription.ticker])
-    stock = prices.get(subscription.ticker, {})
-    rec = get_recommendation(
-        subscription.ticker,
-        stock.get("price", 0),
-        stock.get("change_pct", 0),
-    )
+    """Send a merged stock price email for all active subscriptions sharing this email."""
+    if not subscription.is_active:
+        logger.info(f"Skipping inactive subscription: {subscription}")
+        return
 
-    stocks_data = [{
-        "ticker": subscription.ticker,
-        "name": stock.get("name", subscription.ticker),
-        "price": stock.get("price", "N/A"),
-        "change_pct": stock.get("change_pct", 0),
-        "currency": stock.get("currency", "USD"),
-        "action": rec.get("action", "Hold"),
-        "reason": rec.get("reason", ""),
-    }]
+    # Merge: find all active subscriptions for the same email address
+    all_subs = Subscription.objects.filter(email=subscription.email, is_active=True)
+    tickers = sorted({sub.ticker for sub in all_subs})
+
+    prices = get_stock_prices(tickers)
+    stocks_data = []
+    for ticker in tickers:
+        stock = prices.get(ticker, {})
+        rec = get_recommendation(
+            ticker, stock.get("price", 0), stock.get("change_pct", 0)
+        )
+        stocks_data.append({
+            "ticker": ticker,
+            "name": stock.get("name", ticker),
+            "price": stock.get("price", "N/A"),
+            "change_pct": stock.get("change_pct", 0),
+            "currency": stock.get("currency", "USD"),
+            "action": rec.get("action", "Hold"),
+            "reason": rec.get("reason", ""),
+        })
 
     _send_email(subscription.email, stocks_data)
 
 
 def send_merged_emails():
     """Send periodic emails, merging multiple tickers per email address."""
-    subscriptions = Subscription.objects.all()
+    subscriptions = Subscription.objects.filter(is_active=True)
     if not subscriptions.exists():
         logger.info("No subscriptions to send emails for.")
         return

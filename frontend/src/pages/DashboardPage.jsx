@@ -10,6 +10,7 @@ import {
   getAlerts,
   createAlert,
   deleteAlert,
+  getRecommendation,
 } from "../services/api";
 import toast from "react-hot-toast";
 import SparklineChart from "../components/SparklineChart";
@@ -53,8 +54,10 @@ export default function DashboardPage() {
   const [sparklines, setSparklines] = useState({});
   const [subsLoading, setSubsLoading] = useState(true);
   const [newTicker, setNewTicker] = useState("");
-  const [newEmail, setNewEmail] = useState("");
+  const [newEmail, setNewEmail] = useState(user?.email || "");
   const [addingSub, setAddingSub] = useState(false);
+  const [recommendations, setRecommendations] = useState({});
+  const [recLoading, setRecLoading] = useState(new Set());
 
   // alert state
   const [alerts, setAlerts] = useState([]);
@@ -131,17 +134,43 @@ export default function DashboardPage() {
     return () => clearInterval(interval);
   }, [fetchSubscriptions, fetchAlerts]);
 
+  // pre-fill email when user loads
+  useEffect(() => {
+    if (user?.email && !newEmail) {
+      setNewEmail(user.email);
+    }
+  }, [user]);
+
   // --------------- handlers ---------------
+
+  const handleGetRec = async (ticker) => {
+    setRecLoading((prev) => new Set(prev).add(ticker));
+    try {
+      const rec = await getRecommendation(ticker);
+      setRecommendations((prev) => ({ ...prev, [ticker]: rec }));
+    } catch {
+      toast.error("Failed to get recommendation");
+    } finally {
+      setRecLoading((prev) => {
+        const next = new Set(prev);
+        next.delete(ticker);
+        return next;
+      });
+    }
+  };
 
   const handleAddSub = async (e) => {
     e.preventDefault();
     if (!newTicker.trim()) return;
     setAddingSub(true);
     try {
-      await createSubscription(newTicker.toUpperCase().trim(), newEmail.trim());
-      toast.success("Subscription added");
+      const result = await createSubscription(newTicker.toUpperCase().trim(), newEmail.trim());
+      if (result.verification_required) {
+        toast.success(`Verification email sent to ${newEmail.trim()}. Check your inbox.`);
+      } else {
+        toast.success("Subscription added");
+      }
       setNewTicker("");
-      setNewEmail("");
       fetchSubscriptions();
     } catch (err) {
       const msg =
@@ -171,8 +200,8 @@ export default function DashboardPage() {
     try {
       await sendNow(id);
       toast.success("Report sent!");
-    } catch {
-      toast.error("Failed to send report");
+    } catch (err) {
+      toast.error(err.response?.data?.error || "Failed to send report");
     } finally {
       setSendingIds((prev) => {
         const next = new Set(prev);
@@ -229,7 +258,8 @@ export default function DashboardPage() {
       company: p.name || sub.ticker,
       price: p.price ?? null,
       change: p.change_pct ?? null,
-      recommendation: null,
+      recommendation: recommendations[sub.ticker]?.action || null,
+      recReason: recommendations[sub.ticker]?.reason || null,
       spark: sparklines[sub.ticker] || [],
     };
   });
@@ -342,20 +372,21 @@ export default function DashboardPage() {
                     <th className="px-4 py-3 font-medium">Chart</th>
                     <th className="px-4 py-3 font-medium">Rec.</th>
                     <th className="px-4 py-3 font-medium">Email</th>
+                    <th className="px-4 py-3 font-medium">Status</th>
                     <th className="px-4 py-3 font-medium text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {subsLoading ? (
                     <>
-                      <SkeletonRow cols={8} />
-                      <SkeletonRow cols={8} />
-                      <SkeletonRow cols={8} />
+                      <SkeletonRow cols={9} />
+                      <SkeletonRow cols={9} />
+                      <SkeletonRow cols={9} />
                     </>
                   ) : rows.length === 0 ? (
                     <tr>
                       <td
-                        colSpan={8}
+                        colSpan={9}
                         className="px-4 py-10 text-center text-gray-400"
                       >
                         No subscriptions yet. Add one above.
@@ -406,24 +437,49 @@ export default function DashboardPage() {
                           </td>
                           <td className="px-4 py-3">
                             {rec ? (
-                              <span
-                                className={`text-[11px] font-semibold uppercase px-2 py-0.5 rounded ${rec.cls}`}
-                              >
-                                {rec.text}
-                              </span>
+                              <div>
+                                <span
+                                  className={`text-[11px] font-semibold uppercase px-2 py-0.5 rounded ${rec.cls}`}
+                                >
+                                  {rec.text}
+                                </span>
+                                {row.recReason && (
+                                  <div className="text-[10px] text-gray-400 mt-1 max-w-[200px] leading-tight">
+                                    {row.recReason}
+                                  </div>
+                                )}
+                              </div>
                             ) : (
-                              <span className="text-gray-400">--</span>
+                              <button
+                                onClick={() => handleGetRec(row.ticker)}
+                                disabled={recLoading.has(row.ticker)}
+                                className="text-xs text-indigo-600 border border-indigo-300 rounded px-2 py-0.5 hover:bg-indigo-600 hover:text-white transition-colors disabled:opacity-50"
+                              >
+                                {recLoading.has(row.ticker) ? "..." : "Get Rec."}
+                              </button>
                             )}
                           </td>
                           <td className="px-4 py-3 text-gray-500 text-xs">
                             {row.email || user?.email || "--"}
                           </td>
+                          <td className="px-4 py-3">
+                            {row.is_active ? (
+                              <span className="text-[11px] font-semibold uppercase px-2 py-0.5 rounded bg-emerald-100 text-emerald-700">
+                                Active
+                              </span>
+                            ) : (
+                              <span className="text-[11px] font-semibold uppercase px-2 py-0.5 rounded bg-amber-100 text-amber-700">
+                                Pending verification
+                              </span>
+                            )}
+                          </td>
                           <td className="px-4 py-3 text-right">
                             <div className="flex items-center justify-end gap-2">
                               <button
                                 onClick={() => handleSendNow(row.id)}
-                                disabled={sendingIds.has(row.id)}
-                                className="text-xs text-[#1a1a2e] border border-[#1a1a2e] rounded px-2.5 py-1 hover:bg-[#1a1a2e] hover:text-white transition-colors disabled:opacity-50"
+                                disabled={sendingIds.has(row.id) || !row.is_active}
+                                title={!row.is_active ? "Verify email first" : ""}
+                                className="text-xs text-[#1a1a2e] border border-[#1a1a2e] rounded px-2.5 py-1 hover:bg-[#1a1a2e] hover:text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                               >
                                 {sendingIds.has(row.id) ? "Sending..." : "Send Now"}
                               </button>

@@ -111,13 +111,17 @@ SIMPLE_JWT = {
 CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS", default=["http://localhost:5173"])
 CORS_ALLOW_CREDENTIALS = True
 
+# CSRF
+CSRF_TRUSTED_ORIGINS = env.list("CSRF_TRUSTED_ORIGINS", default=["http://localhost:8000"])
+
+
 # Celery
 CELERY_BROKER_URL = env("REDIS_URL", default="redis://localhost:6379/0")
 CELERY_RESULT_BACKEND = env("REDIS_URL", default="redis://localhost:6379/0")
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
-CELERY_TIMEZONE = "US/Eastern"
+CELERY_TIMEZONE = "America/New_York"
 CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
 
 # Cache (Redis)
@@ -143,7 +147,7 @@ ANTHROPIC_API_KEY = env("ANTHROPIC_API_KEY", default="")
 
 # Internationalization
 LANGUAGE_CODE = "en-us"
-TIME_ZONE = "US/Eastern"
+TIME_ZONE = "America/New_York"
 USE_I18N = True
 USE_TZ = True
 
@@ -155,5 +159,8 @@ STORAGES = {
         "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
     },
 }
+
+# Frontend URL (for email verification links)
+FRONTEND_URL = env("FRONTEND_URL", default="http://localhost:5173")
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"

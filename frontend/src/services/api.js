@@ -1,7 +1,7 @@
 import axios from "axios";
 
 const api = axios.create({
-  baseURL: "/api",
+  baseURL: import.meta.env.VITE_API_URL || "/api",
 });
 
 api.interceptors.request.use((config) => {
@@ -22,14 +22,16 @@ api.interceptors.response.use(
       !originalRequest._retry &&
       !originalRequest.url.includes("/auth/refresh/") &&
       !originalRequest.url.includes("/auth/login/") &&
-      !originalRequest.url.includes("/auth/register/")
+      !originalRequest.url.includes("/auth/register/") &&
+      !originalRequest.url.includes("/auth/verify-email/") &&
+      !originalRequest.url.includes("/auth/resend-verification/")
     ) {
       originalRequest._retry = true;
       const refreshToken = localStorage.getItem("refresh_token");
 
       if (refreshToken) {
         try {
-          const { data } = await axios.post("/api/auth/refresh/", {
+          const { data } = await api.post("/auth/refresh/", {
             refresh: refreshToken,
           });
           localStorage.setItem("access_token", data.access);
@@ -85,5 +87,14 @@ export const createAlert = (ticker, target_price, condition) =>
 
 export const deleteAlert = (id) =>
   api.delete(`/alerts/${id}/`).then((r) => r.data);
+
+export const verifyEmail = (token) =>
+  api.post("/auth/verify-email/", { token }).then((r) => r.data);
+
+export const resendVerification = (email) =>
+  api.post("/auth/resend-verification/", { email }).then((r) => r.data);
+
+export const getRecommendation = (ticker) =>
+  api.get("/stocks/recommendation/", { params: { ticker } }).then((r) => r.data);
 
 export default api;

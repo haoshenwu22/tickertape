@@ -1,6 +1,7 @@
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from recommendations.services import get_recommendation
 from .services import get_stock_history, get_stock_prices, validate_ticker
 
 
@@ -26,6 +27,19 @@ class StockHistoryView(APIView):
         yf_period = "5d" if period == "1w" else period
         history = get_stock_history(ticker, yf_period)
         return Response(history)
+
+
+class StockRecommendationView(APIView):
+    def get(self, request):
+        ticker = request.query_params.get("ticker", "").upper()
+        if not ticker:
+            return Response({"error": "ticker parameter is required"}, status=400)
+        prices = get_stock_prices([ticker])
+        stock = prices.get(ticker, {})
+        rec = get_recommendation(
+            ticker, stock.get("price", 0), stock.get("change_pct", 0)
+        )
+        return Response(rec)
 
 
 class ValidateTickerView(APIView):

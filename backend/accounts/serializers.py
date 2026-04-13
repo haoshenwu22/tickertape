@@ -11,7 +11,15 @@ class RegisterSerializer(serializers.ModelSerializer):
         model = User
         fields = ("id", "username", "email", "password")
 
+    def validate_email(self, value):
+        if not value:
+            raise serializers.ValidationError("Email is required.")
+        if User.objects.filter(email=value).exists():
+            raise serializers.ValidationError("A user with this email already exists.")
+        return value
+
     def create(self, validated_data):
+        validated_data["is_active"] = False
         return User.objects.create_user(**validated_data)
 
 
