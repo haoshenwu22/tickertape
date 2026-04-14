@@ -4,218 +4,229 @@ A web application for subscribing to stock price updates via email, with AI-powe
 
 Built for the Hextom Software Engineer 2nd Round Take-Home Project.
 
-## Project Status
+**Live Demo:** https://tickertape-web-519484092009.us-central1.run.app
+**Admin Panel:** https://tickertape-api-519484092009.us-central1.run.app/admin/
 
-### Completed
-- [x] Project scaffolding (Django + React + Docker)
-- [x] Authentication system (JWT, register/login, admin/regular user roles)
-- [x] Subscription CRUD (create, list, delete with real ticker validation)
-- [x] Stock price service (live Yahoo Finance data + mock fallback)
-- [x] AI recommendation engine (Claude API with provider abstraction)
-- [x] Email system (HTML templates, merge logic, Send Now, console backend for dev)
-- [x] Periodic scheduling (Celery Beat — hourly Mon–Fri 9–5 ET)
-- [x] Price alerts bonus feature (target price notifications)
-- [x] Stock charts bonus feature (sparklines + interactive full charts)
-- [x] Local development and testing
+## Documents in this repo
 
-### Remaining
-- [ ] Set up Gmail SMTP for real email delivery
-- [ ] Deploy to GCP (Cloud Run + Cloud SQL + Secret Manager)
-- [ ] Production environment configuration
-- [ ] Final end-to-end testing on production
+| File | Purpose |
+|---|---|
+| `README.md` (this file) | Design notes, key assumptions, tradeoffs, important decisions |
+| `SETUP_INSTRUCTIONS.md` | How to run locally and deploy to GCP |
+| `AI_USAGE.md` | How AI was used in this project (prompts, corrections, verification) |
+| `REQUIREMENTS_CHECKLIST.md` | Mapping of PDF requirements → implementation status |
+| `DEVELOPMENT_LOG.md` | Chronological log of all bugs encountered and how they were resolved |
 
-## Features
+---
 
-- **Stock Subscriptions** — Subscribe to stock tickers and receive periodic email updates with current prices
-- **AI Recommendations** — Each stock includes a Buy/Hold/Sell recommendation with reasoning, powered by Claude AI
-- **Email Merging** — Multiple subscriptions for the same email are merged into a single email
-- **Periodic Scheduling** — Emails sent every hour, Mon–Fri, 9 AM–5 PM Eastern Time
-- **Price Alerts** — Set target price alerts that trigger email notifications when conditions are met
-- **Stock Charts** — Interactive sparklines and expandable historical charts (1W/1M/3M/1Y)
-- **Role-Based Access** — Regular users see only their subscriptions; admins see all
+## Features Overview
+
+- Stock subscriptions with real ticker validation (via yfinance)
+- AI-generated Buy/Hold/Sell recommendations (Claude API, with provider abstraction)
+- Email verification on registration (blocking) and on subscription emails
+- Email merging — one email per recipient containing all their tickers
+- Periodic sending hourly Mon-Fri 9-5 ET (Celery Beat)
+- Price alerts with above/below conditions (bonus feature)
+- Interactive stock charts — sparklines + full chart modal (bonus feature)
+- Role-based access (regular users vs admins)
+- Django admin panel for database management
+
+---
 
 ## Tech Stack
 
-| Layer | Technology |
-|---|---|
-| Backend | Python 3.12, Django 6, Django REST Framework |
-| Frontend | React 18 (Vite), Tailwind CSS 4 |
-| Database | PostgreSQL 16 |
-| Task Queue | Celery + Redis + django-celery-beat |
-| Stock Data | Yahoo Finance (yfinance) |
-| AI | Claude API (Haiku) with provider abstraction |
-| Email | Gmail SMTP |
-| Auth | JWT (djangorestframework-simplejwt) |
+| Layer | Choice | Rationale |
+|---|---|---|
+| Backend | Python 3.12 + Django 6 + DRF | Required by spec. DRF adds clean REST patterns + JWT support. |
+| Frontend | React 18 + Vite + Tailwind CSS 4 | Required by spec. Vite's fast HMR and build speed was an easy choice over CRA. |
+| Database | PostgreSQL 16 | Required by spec. |
+| Task Queue | Celery + Redis | Mature, fits the once-per-hour scheduling requirement. `django-celery-beat` for the cron scheduler. |
+| Stock Data | `yfinance` | Required by spec. Mock fallback for resilience. |
+| AI | Claude API (Haiku) | Cheapest + fastest Claude model, sufficient for 1-sentence recommendations. |
+| Email | Gmail SMTP (async via Celery) | Free, sufficient for demo. SendGrid/SES is the obvious upgrade for real scale. |
+| Auth | JWT (`djangorestframework-simplejwt`) + custom email verification | JWT for SPA statelessness; email verification bolted on for security. |
+| Deployment | GCP (Cloud Run + Cloud SQL + Memorystore + Secret Manager) | Managed services to minimize ops overhead for a demo project. |
+
+---
 
 ## Architecture
 
 ```
 ┌─────────────┐     ┌───────────────────────┐     ┌───────────┐
 │  React SPA  │────▶│  Django REST API      │────▶│PostgreSQL │
-│  (Vite)     │     │  - Auth (JWT)         │     └───────────┘
-└─────────────┘     │  - Subscriptions CRUD │
+│  (Vite)     │     │  - Auth (JWT)         │     │(Cloud SQL)│
+└─────────────┘     │  - Email Verification │     └───────────┘
+  Cloud Run         │  - Subscriptions CRUD │
                     │  - Stock Prices       │────▶ Yahoo Finance API
                     │  - AI Recommendations │────▶ Claude API
                     │  - Email Service      │────▶ Gmail SMTP
-                    └──────────┬───────────┘
-                               │
-                    ┌──────────▼────────────┐
-                    │  Celery Worker/Beat   │────▶ Redis
-                    │  - Periodic emails    │
-                    │  - Price alert checks │
+                    └──────────┬───────────-┘
+                     Cloud Run │
+                    ┌──────────▼────────────┐     ┌───────────┐
+                    │  Celery Worker/Beat   │────▶│   Redis   │
+                    │  - Periodic emails    │     │(Memorystore)
+                    │  - Price alert checks │     └───────────┘
+                    │  - Verification emails│
                     └───────────────────────┘
+                      Cloud Run
 ```
 
-## Local Development Setup
+The backend API, Celery worker, and frontend each run as independent Cloud Run services. Secrets come from Secret Manager at container start. Redis lives in Memorystore reachable via a VPC connector.
 
-### Prerequisites
-- Python 3.12+
-- Node.js 22+
-- Docker & Docker Compose (for PostgreSQL and Redis)
+---
 
-### 1. Clone and configure environment
+## Key Assumptions
 
-```bash
-git clone <repo-url>
-cd tickertape
-cp .env.example .env
-```
+These are the things we assumed about the problem where the spec was silent. Each assumption trades off something.
 
-Edit `.env` and set your Anthropic API key:
-```
-ANTHROPIC_API_KEY=sk-ant-...your-key...
-```
+### 1. "Email address" in a subscription is the recipient, not always the subscriber's email
+The spec is ambiguous about whether the email in a subscription is always the logged-in user's email. We assumed the user can enter **any** email — but that opened an abuse vector (any user could spam any email address). We resolved this with email ownership verification: using a non-verified email triggers a verification flow for that address before the subscription activates.
 
-All other defaults work out of the box for local development. Emails will print to the Django console (no Gmail credentials needed for dev).
+### 2. "Merge emails when possible" applies to both scheduled and manual sends
+The spec only explicitly calls out merging for periodic emails. We interpreted the intent as "a recipient should receive one email per send event, not N emails" — so Send Now also merges all of the recipient's active subscriptions. If the interviewer expected Send Now to be single-ticker, it's a one-line change to revert.
 
-### 2. Start PostgreSQL and Redis
+### 3. Market holidays aren't special
+The schedule is "hourly Mon-Fri 9-5 ET." We do not check the NYSE holiday calendar. On a market holiday the app still sends emails — the recommendations will just reflect the previous trading day's data. Adding a holiday-aware check is a pure extension, not a bug.
 
-```bash
-docker compose up db redis -d
-```
+### 4. Admins are fully trusted
+Admins (Django's `is_staff=True`) bypass email verification entirely and can create subscriptions with any email. The assumption is that admins are internal staff, not customers. A more paranoid model would still require verification for admin-created emails targeting external users.
 
-### 3. Set up the Python backend
+### 5. Recommendations are cached per ticker, not per user
+Two users subscribed to AAPL will receive the same recommendation text within a 1-hour window. This is intentional — the recommendation is about the stock, not the user, and this avoids burning money on duplicate Claude API calls. The 1-hour TTL also matches the sending cadence.
 
-```bash
-python3 -m venv venv
-source venv/bin/activate
-pip install -r backend/requirements.txt
-cd backend
-python manage.py migrate
-python manage.py createsuperuser   # creates your admin account
-```
+### 6. Scale is modest
+The app is designed for dozens to low thousands of users. Scaling to 10x or 100x is discussed in "Scaling Considerations" below — most of the architecture holds, but a few pieces (Gmail SMTP, Memorystore tier, Celery beat singleton) would need replacement.
 
-### 4. Start the Django backend
+---
 
-```bash
-# In backend/ directory, with venv activated
-python manage.py runserver
-```
+## Important Decisions & Tradeoffs
 
-Backend runs at `http://localhost:8000`.
+### AI recommendation: provider abstraction
+**Decision:** The recommendation engine has a `RecommendationProvider` base class (see `backend/recommendations/providers/base.py`). Swapping models (Claude → DeepSeek → Kimi → rule-based) is one new file implementing the base class.
 
-### 5. Start the React frontend (new terminal)
+**Why:** Lets us hedge against AI provider outages, pricing changes, and model deprecation. Also means it's trivial to drop in a smaller/cheaper model if usage grows.
 
-```bash
-cd frontend
-npm install
-npm run dev
-```
+**Tradeoff:** Slight complexity overhead vs just calling `anthropic.Anthropic()` inline. Worth it because we also get a built-in rule-based fallback when the Claude API fails.
 
-Frontend runs at `http://localhost:5173`.
+### Email verification is blocking
+**Decision:** Newly registered users cannot log in until they verify their email. Subscriptions to unverified emails are "pending" and don't receive any sending until verification.
 
-### 6. (Optional) Start Celery worker and beat
+**Why:** Without this, anyone could spam-subscribe others' inboxes with stock emails. Blocking verification is the standard modern pattern and is what users expect.
 
-These are only needed for periodic email sending and automatic price alert checking. The core app works without them — "Send Now" triggers synchronously.
+**Tradeoff:** Slower onboarding, and if Gmail SMTP is flaky the user is stuck. We mitigated by sending verification emails asynchronously (Celery) so the API response is fast, and added a "resend verification" button.
 
-```bash
-# Terminal 3 — Celery worker
-cd backend
-source ../venv/bin/activate
-celery -A config worker -l info
+### Verification requires a manual button click
+**Decision:** The verification page does NOT auto-verify on page load. The user must click a "Verify Email" button.
 
-# Terminal 4 — Celery beat scheduler
-cd backend
-source ../venv/bin/activate
-celery -A config beat -l info
-```
+**Why:** Email clients (Gmail in particular) run link scanners that GET the verification URL to scan for malware. If the page had auto-verify, any email client or corporate security proxy could accidentally verify the account. This actually happened during development — a user's account was silently activated before the verification email even arrived in their inbox.
 
-### 7. Open the app
+**Tradeoff:** One extra click for the user. Worth it — the alternative broke the entire security model.
 
-Go to `http://localhost:5173` — register an account or log in with your superuser credentials.
+### Celery worker is always-on (`min-instances=1`)
+**Decision:** The Celery worker Cloud Run service has `min-instances=1` and `cpu-throttling=false`.
 
-## Environment Variables
+**Why:** Celery Beat is the scheduler — it must be running 24/7 to fire jobs at 9:00, 10:00, etc. Eastern Time. If the container sleeps, the schedule misses.
 
-| Variable | Description | Default | Required for Production |
-|---|---|---|---|
-| `DJANGO_SECRET_KEY` | Django secret key | dev key | Yes |
-| `DATABASE_URL` | PostgreSQL connection string | `postgres://postgres:postgres@localhost:5432/tickertape` | Yes |
-| `REDIS_URL` | Redis connection string | `redis://localhost:6379/0` | Yes |
-| `ANTHROPIC_API_KEY` | Claude API key for AI recommendations | — | Yes |
-| `GMAIL_ADDRESS` | Gmail address for sending emails | — | Yes |
-| `GMAIL_APP_PASSWORD` | Gmail App Password (not your regular password) | — | Yes |
-| `EMAIL_BACKEND` | Django email backend | `console` (prints to terminal) | Set to `django.core.mail.backends.smtp.EmailBackend` for production |
-| `AI_RECOMMENDATION_PROVIDER` | `claude` or `rule_based` | `claude` | No |
-| `DEBUG` | Enable debug mode | `True` | Set to `False` |
-| `CORS_ALLOWED_ORIGINS` | Allowed frontend origins | `http://localhost:5173` | Yes |
-| `ALLOWED_HOSTS` | Django allowed hosts | `localhost,127.0.0.1` | Yes |
+**Tradeoff:** This is the single biggest cost driver (~$2/day). A production rearchitecture would replace Celery Beat with Cloud Scheduler → Cloud Run Job, allowing the worker to scale to zero. For a demo, the simplicity won.
 
-## Design Decisions
+### `is_active` defaults to `False` on Subscription model
+**Decision:** The model field is `is_active = BooleanField(default=False)`. Code paths that should create active subscriptions (admin, verified email) pass `is_active=True` explicitly.
 
-### Scheduling
-- Emails sent at the top of each hour: 9:00, 10:00, ..., 17:00 ET (9 sends/day max)
-- No market holiday awareness — deliberate simplification; Mon–Fri schedule as specified
-- Idempotent: skips if no subscriptions exist
+**Why:** Fail-safe — any code path that forgets to set `is_active` creates a pending (safe) subscription, not an accidentally-active one. We learned this the hard way during testing.
 
-### AI Provider Abstraction
-The recommendation engine uses a provider pattern (`recommendations/providers/`) to allow swapping AI models:
-- **Claude** (default) — `claude-haiku-4-5-20251001` for fast, cheap, quality recommendations
-- **Rule-based** — fallback if AI provider is unavailable (>3% up → Sell, >3% down → Buy, else Hold)
-- To add a new provider (e.g., DeepSeek, Kimi): implement `RecommendationProvider` base class and register in `services.py`
+**Tradeoff:** Slightly more verbose code (always pass the flag explicitly). Worth it for safety.
 
-### Email Merging
-- Subscriptions are grouped by email address (not by user), so `user@example.com` subscribed to AAPL and BB receives one email with both
-- Uses Django's `send_mail` with HTML template + plain-text fallback
+### Subscription visibility is email-based, not user-based
+**Decision:** A user sees subscriptions where `user=me` OR `email IN my_verified_emails`.
 
-### Authentication
-- JWT tokens (access: 30 min, refresh: 7 days) stored in localStorage
-- Django's built-in `is_staff` flag used as admin indicator — no custom user model fields needed
-- Admin users see all subscriptions and alerts across all users
+**Why:** If someone else (or admin) creates a subscription targeting user A's email, user A should be able to see and delete it — otherwise they'd have to contact support.
 
-### Stock Data
-- Primary: Yahoo Finance via `yfinance` library
-- Mock fallback: returns hardcoded prices if yfinance is unavailable, flagged with `is_mock: true`
+**Tradeoff:** Users see subscriptions they didn't create, which could be confusing. Mitigated by the UI showing the email each subscription targets.
 
-## Bonus Features
+### React frontend calls the backend directly (no Nginx proxy)
+**Decision:** The frontend container serves static files via Nginx with no `/api/` proxy. The React app has the backend URL baked in at build time via `VITE_API_URL`.
 
-### 1. Price Alerts
-Users can set target price alerts with "above" or "below" conditions. A Celery task checks prices every 15 minutes and sends email notifications when conditions are met. Alerts are marked as triggered and won't fire again.
+**Why:** We initially tried an Nginx proxy in the frontend container, which caused 502 errors due to SSL termination and host header issues between Cloud Run services. Direct calls with CORS are simpler and more reliable.
 
-**Value:** Provides immediate, actionable notifications instead of waiting for the hourly digest. Common request in financial apps.
+**Tradeoff:** CORS configuration needs to match production URLs exactly. A rebuild is needed if the backend URL changes (rare).
 
-### 2. Stock Charts
-Interactive price charts using Recharts:
-- Sparkline previews (7-day) in the subscription table
-- Expandable full chart modal with 1W/1M/3M/1Y period selection
-- Color-coded: green when trending up, red when trending down
+### JWT tokens in localStorage
+**Decision:** Access token in localStorage, refresh token also in localStorage. Bearer auth via Authorization header.
 
-**Value:** Visual context for price movements helps users quickly assess their portfolio without leaving the app.
+**Why:** Simplest pattern for a SPA. DRF-simplejwt handles the server side.
 
-## API Endpoints
+**Tradeoff:** XSS risk — any JS can read the tokens. HttpOnly cookies would be safer but come with CSRF complexity. For a demo project, the simpler approach is fine; for real production with sensitive data, we'd switch to HttpOnly refresh cookie + short-lived access token in memory.
 
-| Method | Endpoint | Description |
+---
+
+## Scaling Considerations
+
+If this app had to scale to **10x or 100x users**:
+
+- **Backend API** — Cloud Run auto-scales horizontally already. `max-instances` would need to be raised from 3.
+- **Cloud SQL** — upgrade from db-f1-micro to a real tier, add read replicas, add connection pooling via PgBouncer.
+- **Celery worker** — raise `max-instances`, keep `min-instances=1` (Celery Beat must be singleton — a second beat would cause duplicate email sends).
+- **AI API costs** — the 1-hour ticker-level cache already amortizes well. At scale, extend TTL to 2-4 hours and add ticker-level rate limiting.
+- **Email sending** — Gmail SMTP caps at ~500/day. At any real user count, migrate to SendGrid or AWS SES (~$0.10 per 1000 emails).
+- **Redis** — Memorystore basic tier is fine for up to ~100K ops/sec. Switch to standard tier with HA for reliability at scale.
+
+---
+
+## Cost Analysis & Reduction Strategy
+
+### Current production cost: ~$6-7/day (~$180-210/month)
+
+| Service | Config | Daily cost |
 |---|---|---|
-| POST | `/api/auth/register/` | Register new user |
-| POST | `/api/auth/login/` | Login (returns JWT) |
-| POST | `/api/auth/refresh/` | Refresh JWT token |
-| GET | `/api/auth/me/` | Current user info |
-| GET | `/api/subscriptions/` | List subscriptions |
-| POST | `/api/subscriptions/` | Create subscription |
-| DELETE | `/api/subscriptions/{id}/` | Delete subscription |
-| POST | `/api/subscriptions/{id}/send-now/` | Send immediate email |
-| GET | `/api/stocks/prices/?tickers=AAPL,BB` | Batch stock prices |
-| GET | `/api/stocks/history/?ticker=AAPL&period=1mo` | Historical prices |
-| GET | `/api/stocks/validate/?ticker=AAPL` | Validate ticker symbol |
-| GET | `/api/alerts/` | List price alerts |
-| POST | `/api/alerts/` | Create price alert |
-| DELETE | `/api/alerts/{id}/` | Delete price alert |
+| Celery worker | Cloud Run, `min-instances=1`, `cpu-throttling=false`, 1 vCPU, 512Mi | ~$2.00 (biggest driver) |
+| Cloud SQL | db-f1-micro | ~$0.50 |
+| Memorystore Redis | 1GB basic tier | ~$1.20 |
+| VPC Connector | e2-micro | ~$0.15 |
+| Backend API + Frontend | scale-to-zero | ~$0.10 |
+| Secret Manager + Artifact Registry | free/tiny | ~$0 |
+
+### Temporary pause (~$1.35/day)
+```bash
+bash deploy/pause_services.sh
+```
+Scales Cloud Run to zero, stops Cloud SQL. Memorystore and VPC connector remain (can't be paused, only deleted). Good for nights/weekends.
+
+### Full destroy ($0/day)
+```bash
+bash deploy/destroy_all.sh
+```
+Deletes all GCP resources. Local Docker Compose still works for development. Best when the app doesn't need to be publicly accessible.
+
+### Architectural optimizations (for long-term deployment)
+
+If running this in production long-term, these would cut ~80% of the cost:
+
+1. **Replace always-on Celery Beat with Cloud Scheduler + Cloud Run Jobs** (save ~$40/month). Cloud Scheduler pings an HTTP endpoint on cron; the backend enqueues or executes tasks. Worker scales to zero between invocations.
+2. **Replace Memorystore with Upstash or a sidecar Redis** (save ~$35/month). Memorystore's minimum instance is overkill for our usage (a few hundred commands/hour). Upstash has a free tier covering 10k commands/day.
+3. **Cloud SQL auto-pause** on newer tiers (db-perf-optimized-N-2) — not available on db-f1-micro, but would further cut the DB cost.
+4. **Combine backend + worker into a single Cloud Run service** (save ~$30/month). Gunicorn and Celery in the same container halves Cloud Run cost. Loses some isolation, fine for low scale.
+5. **Move to a single $5/month VPS** (save ~$170/month). For traffic under ~1000 users, a DigitalOcean droplet running Docker Compose would serve this just as well. Cloud Run's elasticity is overkill without viral growth.
+
+### Pragmatic recommendation
+- **Demo / portfolio**: current setup, pause when not in use.
+- **Real product with <1k users**: collapse to a single VPS with Docker Compose (~$5-10/month).
+- **Scaling product**: keep Cloud Run, apply optimizations 1 + 2.
+
+---
+
+## What's NOT in this project
+
+Explicit non-goals — things we deliberately skipped and why:
+
+- **Password reset flow** — not required by spec, and a tech interview demo doesn't benefit from it.
+- **Social login (Google/GitHub OAuth)** — would conflict with the email verification model and doesn't add interview value.
+- **Tests beyond Django's built-in checks** — the spec doesn't require them, and the time budget was spent on features/debugging.
+- **Backwards-compatibility for old data** — the is_active field added mid-project uses `default=False`; existing rows in dev DB were updated manually. In production this would need a data migration.
+- **Rate limiting at the API level** — DRF has throttling classes but not configured. For demo scale, not needed; for production, would add per-user and per-IP throttles.
+- **Monitoring/alerting** — Cloud Run has built-in logs, but no Grafana/PagerDuty integration. Fine for a demo.
+
+---
+
+## Running and Deploying
+
+See **[SETUP_INSTRUCTIONS.md](./SETUP_INSTRUCTIONS.md)** for full setup and deployment instructions.

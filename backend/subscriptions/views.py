@@ -1,12 +1,22 @@
+from django.db.models import Q
 from rest_framework import generics, permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from accounts.models import VerifiedEmail
 from notifications.services import send_stock_email_for_subscription
 from stocks.services import validate_ticker
 
 from .models import Subscription
 from .serializers import SubscriptionSerializer
+
+
+def _user_subscriptions(user):
+    """Get subscriptions visible to a user: their own + any targeting their verified emails."""
+    verified_emails = VerifiedEmail.objects.filter(user=user).values_list("email", flat=True)
+    return Subscription.objects.filter(
+        Q(user=user) | Q(email__in=verified_emails)
+    ).distinct()
 
 
 class SubscriptionListCreateView(generics.ListCreateAPIView):
@@ -15,7 +25,7 @@ class SubscriptionListCreateView(generics.ListCreateAPIView):
     def get_queryset(self):
         if self.request.user.is_staff:
             return Subscription.objects.all()
-        return Subscription.objects.filter(user=self.request.user)
+        return _user_subscriptions(self.request.user)
 
     def perform_create(self, serializer):
         from django.db import IntegrityError
@@ -93,7 +103,7 @@ class SubscriptionDeleteView(generics.DestroyAPIView):
     def get_queryset(self):
         if self.request.user.is_staff:
             return Subscription.objects.all()
-        return Subscription.objects.filter(user=self.request.user)
+        return _user_subscriptions(self.request.user)
 
 
 class SendNowView(APIView):
@@ -102,7 +112,7 @@ class SendNowView(APIView):
             if request.user.is_staff:
                 subscription = Subscription.objects.get(pk=pk)
             else:
-                subscription = Subscription.objects.get(pk=pk, user=request.user)
+                subscription = _user_subscriptions(request.user).get(pk=pk)
         except Subscription.DoesNotExist:
             return Response({"error": "Subscription not found."}, status=status.HTTP_404_NOT_FOUND)
 
