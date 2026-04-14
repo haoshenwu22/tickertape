@@ -164,3 +164,22 @@ This document records all significant problems encountered during development, d
 **Root cause:** The subscription list query only filtered by `user=request.user`, so users only saw subscriptions they personally created.
 
 **Fix:** Updated the query to show subscriptions where `user=me` OR `email IN my_verified_emails`. Same logic applied to delete and Send Now permissions.
+
+---
+
+## Phase 4: Production Monitoring
+
+### 22. Periodic emails arriving at wrong times + duplicates outside schedule window
+**Problem:** Periodic stock emails were arriving at irregular times (9:07 instead of 9:00, 10:15 instead of 10:00). Worse, the user received two identical emails at 6:31 PM and 6:39 PM ET — well outside the 9 AM-5 PM scheduled window.
+
+**Root cause:** The Celery worker Cloud Run container was in a **crash loop due to out-of-memory**. Memory usage peaked at ~600 MiB while the limit was only 512 MiB. Cloud Run killed and restarted the container every ~8 seconds. This caused two cascading issues:
+1. When a scheduled task time (e.g., 9:00) was missed due to the container being mid-restart, Celery Beat's "catchup" behavior fired the task on the next successful startup — arriving a few minutes late.
+2. The constant restarts corrupted Celery Beat's internal state tracking (last-run-at timestamps), causing it to fire tasks multiple times outside the normal schedule window.
+
+Diagnosed by running `gcloud logging read` filtered by `severity>=ERROR` on the worker service, which revealed repeated "Memory limit of 512 MiB exceeded with 596 MiB used" errors every 8 seconds.
+
+**Fix:** Increased worker memory from 512Mi to 1Gi via `gcloud run services update tickertape-worker --memory=1Gi`. The Celery worker process (Celery + Claude SDK + yfinance + Redis client + health-check HTTP server) legitimately needs more than 512Mi at peak.
+
+**Cost impact:** ~$0.50/day more (from ~$2/day to ~$2.50/day). Essential for reliability.
+
+**Lesson:** Cloud Run's memory limits are hard — when exceeded, the container is killed immediately with no warning beyond the logs. Background workers that do heavy work (external API calls, JSON parsing, pandas DataFrames from yfinance) need to be provisioned generously. A regular HTTP request-handler service is fine with 256-512Mi, but Celery workers doing mixed workloads need 1Gi+.
