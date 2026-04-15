@@ -9,8 +9,8 @@ from .tasks import send_verification_email_task
 
 
 def send_verification_email(user, email, token, token_type):
-    """Queue verification email to be sent asynchronously via Celery."""
-    send_verification_email_task.delay(user.username, email, token, token_type)
+    """Send verification email synchronously (no Celery dependency)."""
+    send_verification_email_task(user.username, email, token, token_type)
 
 
 class RegisterView(generics.CreateAPIView):
